@@ -239,6 +239,8 @@ class StreamTransportMixin:
         """Record the primary id plus any continuation ids from an oversized split."""
         raw = getattr(result, "raw_response", None) or {}
         raw_ids = raw.get("message_ids") if isinstance(raw, dict) else None
+        if isinstance(raw, dict) and raw.get("telegram_message_time") and getattr(result, "message_id", None):
+            self._platform_message_times[str(result.message_id)] = raw["telegram_message_time"]
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)

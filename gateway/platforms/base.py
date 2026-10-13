@@ -4415,6 +4415,8 @@ class BasePlatformAdapter(ABC):
             event, session_key, text_content, metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
+        from gateway.run_preview_receipts import register_standard_final
+        await register_standard_final(self.gateway_runner, event, session_key, text_content, result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 

@@ -2199,6 +2199,13 @@ DEFAULT_CONFIG = {
         # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
         # message metadata regardless), so enabling later surfaces past send-times too.
         "message_timestamps": {"enabled": False},
+        # Telegram nutrition final-preview receipts (ONLY the `health` profile's personal DM): exposes the
+        # inbound message/reply ids as data and registers the wrapper `preview` after the staged final
+        # is delivered as ONE message. `wrapper_command` is the argv prefix of the installed
+        # nutrition-writeback (global flags included). Off by default.
+        "nutrition_preview_receipts": {
+            "enabled": False, "wrapper_command": [], "confirmer": "", "ttl_seconds": 900,
+        },
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
         # huge remote URLs can OOM-kill constrained deployments. Enforced in

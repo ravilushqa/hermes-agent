@@ -208,6 +208,25 @@ def _flood_cap_result(wait: float) -> SendResult:
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
 
 
+def _telegram_time_raw(msg: Any, *, edited: bool = False) -> Optional[dict]:
+    """``{"telegram_message_time": <UTC ISO>}`` from Telegram's own ``Message.date`` (``edit_date`` for
+    an edit); None when the API result carries none (callers must then fail closed, never invent one)."""
+    if isinstance(msg, dict) and isinstance(msg.get("result"), dict):
+        msg = msg["result"]  # raw Bot API envelope: {"ok": true, "result": <Message>}
+    field = "edit_date" if edited else "date"
+    value = msg.get(field) if isinstance(msg, dict) else getattr(msg, field, None)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            value = datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):  # nan/inf/out of range
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return {"telegram_message_time": value.astimezone(timezone.utc).isoformat()}
+
+
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 
@@ -1518,7 +1537,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             message_id = getattr(msg, "message_id", None)
         if message_id is not None:
             await self._record_rich_sent(chat_id, message_id, content)
-        return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
+        return SendResult(
+            success=True, message_id=str(message_id) if message_id is not None else None,
+            raw_response=_telegram_time_raw(msg))
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content)}
@@ -1543,7 +1564,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # No topic routing on edits: message_thread_id/direct_messages_topic_id make Telegram reject it.
         payload = {**self._rich_payload_base(chat_id, content), "message_id": int(message_id)}
         try:
-            await _await_with_thread_deadline(
+            edited = await _await_with_thread_deadline(
                 self._bot.do_api_request("editMessageText", api_kwargs=payload),
                 timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as exc:
@@ -1557,7 +1578,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return self._rich_transient_result(exc, "rich editMessageText")
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
         await self._record_rich_sent(chat_id, message_id, content)
-        return SendResult(success=True, message_id=message_id)
+        return SendResult(success=True, message_id=message_id, raw_response=_telegram_time_raw(edited, edited=True))
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
@@ -3712,6 +3733,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         requested_thread_id = self._message_thread_id_for_send(thread_id)
         used_thread_fallback = False
         prior = len(delivered)
+        last_msg = None
         for chunk in chunks:
             outcome = await self._send_chunk_with_retries(
                 chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
@@ -3720,12 +3742,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.
                 return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
             msg, used_thread_fallback = outcome
+            last_msg = msg
             delivered.append(str(msg.message_id))
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,
             raw_response={
-                "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
+                "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback,
+                **(_telegram_time_raw(last_msg) or {})})
 
     @staticmethod
     def _with_partial_send(
@@ -3796,24 +3820,30 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
-    async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
-        """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
+    async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> Any:
+        """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text. Returns
+        Telegram's edited ``Message``."""
         kwargs: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
-        await _await_with_thread_deadline(
+        return await _await_with_thread_deadline(
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
-    async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
+    async def _edit_markdown_or_plain(
+        self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str,
+        edited: Optional[list] = None) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
-        skip further work); the fallback edit's exceptions propagate."""
+        skip further work); the fallback edit's exceptions propagate. The edited ``Message`` is
+        appended to ``edited`` when given."""
         try:
-            await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
+            res = await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
-            await self._edit_text(chat_id, message_id, plain)
+            res = await self._edit_text(chat_id, message_id, plain)
+        if edited is not None:
+            edited.append(res)
         return False
 
     async def edit_message(
@@ -3886,10 +3916,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
                 return SendResult(success=True, message_id=message_id)
+            edited: list = []
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
-                "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
-            return SendResult(success=True, message_id=message_id)
+                "[%s] MarkdownV2 edit failed, falling back to plain text: %s", edited)
+            return SendResult(
+                success=True, message_id=message_id, raw_response=_telegram_time_raw(edited[0], edited=True) if edited else None)
         except Exception as e:
             err_str = str(e).lower()
             if "not modified" in err_str:

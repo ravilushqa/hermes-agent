@@ -219,6 +219,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._final_response_sent = False
         self._final_content_delivered = False  # content landed even if the cosmetic edit failed
         self._delivered_final_text: Optional[str] = None
+        self._platform_message_times: dict[str, str] = {}  # message_id -> adapter-reported send/edit time
         self._turn_split_delivery = False
         # True when a full-final send timed out in a way that MAY have reached the platform
         # (``_send_empty_fallback_final`` → "ambiguous"). The only case where a payload-less delivery flag

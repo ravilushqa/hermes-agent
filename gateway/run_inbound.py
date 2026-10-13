@@ -63,8 +63,9 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     message_id = getattr(event, "message_id", None)
     if not message_id or not isinstance(message_text, str):
         return message_text
+    from gateway.run_preview_receipts import strip_evidence_note
     prefix = f"{discord_triggering_note(message_id)}\n\n"
-    return message_text.removeprefix(prefix)
+    return strip_evidence_note(event, message_text.removeprefix(prefix))
 
 
 class GatewayInboundMixin(GatewayPluginInjectionMixin):
@@ -1737,7 +1738,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        from gateway.run_preview_receipts import prepend_evidence
+        return prepend_evidence(
+            self, event, source, session_key, self._prepend_inbound_reply_context(event, source, message_text))
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

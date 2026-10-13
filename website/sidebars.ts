@@ -679,6 +679,7 @@ const sidebars: SidebarsConfig = {
           label: 'Popular',
           items: [
             'user-guide/messaging/telegram',
+            'user-guide/messaging/telegram-nutrition-preview',
             'user-guide/messaging/discord',
             'user-guide/messaging/slack',
             'user-guide/messaging/whatsapp',

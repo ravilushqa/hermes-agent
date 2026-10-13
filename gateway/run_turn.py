@@ -1949,6 +1949,9 @@ class GatewayTurnMixin:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
+            from gateway.run_preview_receipts import register_streamed_final
+            await register_streamed_final(
+                self, event, source, session_key, agent_result.get("streamed_final_snapshot"))
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
@@ -4039,6 +4042,8 @@ class GatewayTurnMixin:
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
+        from gateway.run_preview_receipts import edited_final_snapshot
+        response["streamed_final_snapshot"] = edited_final_snapshot(_sc, _res, content)
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -4086,6 +4091,8 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            from gateway.run_preview_receipts import streamed_final_snapshot
+            response["streamed_final_snapshot"] = streamed_final_snapshot(_sc, _final)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
