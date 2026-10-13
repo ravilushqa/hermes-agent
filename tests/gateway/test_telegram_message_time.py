@@ -1,17 +1,18 @@
 """The Telegram adapter reports Telegram's own Message.date / edit_date on successful sends and edits."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter, _telegram_time_raw
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_message_time import telegram_time_raw as _telegram_time_raw
 
-SENT = datetime(2026, 10, 13, 9, 31, 7, tzinfo=timezone.utc)
-EDITED = datetime(2026, 10, 13, 9, 31, 42, tzinfo=timezone.utc)
+SENT = datetime(2026, 10, 13, 9, 31, 7, tzinfo=UTC)
+EDITED = datetime(2026, 10, 13, 9, 31, 42, tzinfo=UTC)
 
 
 @pytest.fixture

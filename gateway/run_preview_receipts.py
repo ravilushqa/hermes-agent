@@ -31,7 +31,7 @@ import secrets
 import stat
 import subprocess
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +46,7 @@ _PROFILE = "health"
 _MAX_JSON_BYTES = 64 * 1024
 _MAX_INTENT_AGE_S = 3600
 _WRAPPER_TIMEOUT_S = 30
+_EUID = os.geteuid() if hasattr(os, "geteuid") else -1  # fd-relative state is POSIX-only; the gate refuses elsewhere
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
@@ -91,7 +92,7 @@ def _check_ancestors(real_home: Path) -> None:
     """Every ancestor of the (already resolved) home is a dir only root/us can rename within."""
     for p in (real_home, *real_home.parents):
         st = os.stat(p)
-        if st.st_uid not in (0, os.geteuid()) or (st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX):
+        if st.st_uid not in (0, _EUID) or (st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX):
             raise _Unsafe("profile home ancestor is writable by others")
 
 
@@ -112,7 +113,7 @@ def _open_dir(home: Path, *names: str, create: bool = True) -> int:
             os.close(fd)
             fd = nxt
             st = os.fstat(fd)
-            if st.st_uid != os.geteuid() or st.st_mode & 0o077:
+            if st.st_uid != _EUID or st.st_mode & 0o077:
                 raise _Unsafe("state directory is not private")
         return fd
     except BaseException:
@@ -125,7 +126,7 @@ def _read_json_at(dfd: int, name: str) -> dict:
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
     try:
         st = os.fstat(fd)
-        if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.geteuid()
+        if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != _EUID
                 or st.st_mode & 0o077 or st.st_size > _MAX_JSON_BYTES):
             raise _Unsafe("state file is not a private regular file")
         raw = os.read(fd, _MAX_JSON_BYTES + 1)
@@ -176,7 +177,7 @@ def binding_token(session_key: str, sender_id: str, chat_id: str, thread_id: str
 
 def _iso(ts: Any) -> Optional[str]:
     if isinstance(ts, datetime) and ts.tzinfo is not None:
-        return ts.astimezone(timezone.utc).isoformat()
+        return ts.astimezone(UTC).isoformat()
     return None  # naive/absent: never guess an offset
 
 
@@ -259,7 +260,7 @@ def _scan_intents(staged_fd: int, retired_fd: int, binding: str, turn_id: str) -
     """(matching [(name, intent)], unsafe_count). Files that cannot be read safely are quarantined
     and counted: they may have been this turn's intent, so the caller must not guess."""
     found, unsafe = [], 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for name in sorted(os.listdir(staged_fd)):
         if name.startswith(".") or not name.endswith(".json"):
             continue
@@ -297,7 +298,7 @@ def _intent_fields_ok(data: dict) -> bool:
 
 def _run_wrapper(argv: list) -> tuple:
     """Seam for tests: run the installed wrapper, return (returncode, stdout, stderr)."""
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=_WRAPPER_TIMEOUT_S, check=False)
+    proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_WRAPPER_TIMEOUT_S, check=False)
     return proc.returncode, proc.stdout, proc.stderr
 
 

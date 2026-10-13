@@ -14,7 +14,7 @@ import importlib.util
 import json
 import os
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-import gateway.run  # noqa: F401  (import the facade at collection, before the home-IO guard arms)
+import gateway.run  # (import the facade at collection, before the home-IO guard arms)
 from gateway import run_preview_receipts as rcpt
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -64,7 +64,7 @@ def _source(*, platform=Platform.TELEGRAM, chat_type="dm", user=USER, chat=CHAT,
 def _event(source=None, *, mid="773", reply_to=None, quote=None, text="Жарил без масла", ts=None):
     return MessageEvent(
         text=text, source=source or _source(), message_id=mid, reply_to_message_id=reply_to,
-        reply_to_text=quote, timestamp=ts or datetime.now(timezone.utc))
+        reply_to_text=quote, timestamp=ts or datetime.now(UTC))
 
 
 def _runner(home):
@@ -72,7 +72,7 @@ def _runner(home):
 
 
 def _sent(seconds_ago=2):
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).replace(microsecond=0).isoformat()
+    return (datetime.now(UTC) - timedelta(seconds=seconds_ago)).replace(microsecond=0).isoformat()
 
 
 def _ok(sent=SENT, **kw):
@@ -89,7 +89,7 @@ def _stage(home, *, turn="773", user=USER, chat=CHAT, thread="", draft="nutr_X",
     data = {"schema": rcpt.INTENT_SCHEMA, "binding": rcpt.binding_token(session, user, chat, thread),
             "inbound_message_id": turn, "draft_id": draft, "draft_version": version,
             "snapshot_hash": snap, "final_text_sha256": _sha(text),
-            "expires_at": (expires or datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(), **over}
+            "expires_at": (expires or datetime.now(UTC) + timedelta(minutes=10)).isoformat(), **over}
     fd = _state_fd(home, "staged")
     try:
         rcpt._write_json_at(fd, f"{name}.json", data, mode=mode)
@@ -168,10 +168,10 @@ class _Inbound(GatewayInboundMixin):
     def _resolve_profile_home_for_source(self, source):
         return self._home
 
-    _session_key_for_source = lambda self, source: SK  # noqa: E731
-    _consume_pending_native_image_paths = lambda self, key: None  # noqa: E731
-    _prefix_inbound_sender_context = lambda self, event, source, text: text  # noqa: E731
-    _classify_inbound_media = lambda self, event, prepared: ([], [], [], [])  # noqa: E731
+    _session_key_for_source = lambda self, source: SK
+    _consume_pending_native_image_paths = lambda self, key: None
+    _prefix_inbound_sender_context = lambda self, event, source, text: text
+    _classify_inbound_media = lambda self, event, prepared: ([], [], [], [])
 
 
 def _inbound(home, event):
@@ -185,7 +185,7 @@ def _evidence(text: str) -> dict:
 
 
 def test_reply_id_survives_empty_quote_and_stale_origin_is_ignored(home):
-    ts = datetime(2026, 10, 13, 9, 30, tzinfo=timezone.utc)
+    ts = datetime(2026, 10, 13, 9, 30, tzinfo=UTC)
     event = _event(reply_to="9001", quote=None, text="Да", ts=ts, mid="780")
     prepared = _inbound(home, event)
     ev = _evidence(prepared)
@@ -275,7 +275,7 @@ def test_stale_text_is_rejected(home, wrapper):
 
 @pytest.mark.parametrize("over", [
     {"user": "2002"}, {"chat": "2002"}, {"thread": "77"}, {"turn": "700"}, {"session": "agent:main:telegram:dm:2002"},
-    {"expires": datetime.now(timezone.utc) - timedelta(minutes=1)},
+    {"expires": datetime.now(UTC) - timedelta(minutes=1)},
 ])
 def test_intent_bound_elsewhere_or_expired_is_ignored(home, wrapper, over):
     _stage(home, **over)
@@ -473,8 +473,8 @@ class _Turn(GatewayTurnMixin):
         footers = self.footers
         return SimpleNamespace(send=AsyncMock(side_effect=lambda *a, **k: footers.append(a)))
 
-    _should_send_voice_reply = lambda self, *a, **k: False  # noqa: E731
-    _event_thread_metadata = lambda self, event, source: {}  # noqa: E731
+    _should_send_voice_reply = lambda self, *a, **k: False
+    _event_thread_metadata = lambda self, event, source: {}
     _deliver_media_from_response = AsyncMock()
 
 
@@ -631,7 +631,7 @@ def _send_preview(home, nw, mid="773", text=FINAL):
 
 def _reply_file(home, reply_to, *, mid="780", text="Да", user=USER):
     event = _event(_source(user=user), mid=mid, reply_to=reply_to, text=text,
-                   ts=datetime.now(timezone.utc) + timedelta(seconds=30))
+                   ts=datetime.now(UTC) + timedelta(seconds=30))
     return Path(_evidence(_inbound(home, event))["transport_file"])
 
 
@@ -679,7 +679,7 @@ class TestWrapperIntegration:
     def test_expired_preview_is_refused(self, home, nw, monkeypatch):
         preview_id = _send_preview(home, nw)
         f = _reply_file(home, preview_id)
-        later = datetime.now(timezone.utc) + timedelta(hours=2)
+        later = datetime.now(UTC) + timedelta(hours=2)
         monkeypatch.setattr(nw, "_now", lambda: later)
         assert nw.short_confirm(f) != 0 and nw.queue.confirms == 0
 

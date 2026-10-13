@@ -25,6 +25,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.run_preview_receipts import edited_final_snapshot, register_streamed_final, streamed_final_snapshot
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
@@ -1939,8 +1940,7 @@ class GatewayTurnMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
-            # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
-            # would upload every file a second time.
+            # The queued-follow-up lane uploads this response's attachments itself (no second upload).
             if response and adapter and not agent_result.get("media_already_delivered"):
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
@@ -1949,11 +1949,8 @@ class GatewayTurnMixin:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
-            from gateway.run_preview_receipts import register_streamed_final
-            await register_streamed_final(
-                self, event, source, session_key, agent_result.get("streamed_final_snapshot"))
-            # Return None so the body isn't sent twice; stash the delivered text on the event for the
-            # /loop and /goal hooks that read the return value.
+            await register_streamed_final(self, event, source, session_key, agent_result.get("streamed_final_snapshot"))
+            # Return None (body not sent twice); stash the delivered text for the /loop and /goal hooks.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
             return None
@@ -4041,9 +4038,7 @@ class GatewayTurnMixin:
         if not getattr(_res, "success", True):
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
-        response["already_sent"] = True
-        from gateway.run_preview_receipts import edited_final_snapshot
-        response["streamed_final_snapshot"] = edited_final_snapshot(_sc, _res, content)
+        response.update(already_sent=True, streamed_final_snapshot=edited_final_snapshot(_sc, _res, content))
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -4090,9 +4085,7 @@ class GatewayTurnMixin:
                 "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                 _sk, _streamed, _previewed, _content_delivered,
             )
-            response["already_sent"] = True
-            from gateway.run_preview_receipts import streamed_final_snapshot
-            response["streamed_final_snapshot"] = streamed_final_snapshot(_sc, _final)
+            response.update(already_sent=True, streamed_final_snapshot=streamed_final_snapshot(_sc, _final))
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.

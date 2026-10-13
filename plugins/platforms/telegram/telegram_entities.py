@@ -6,6 +6,7 @@ URL; the model only ever sees the anchor unless the URL is inlined (#31071).
 
 from __future__ import annotations
 
+import html as _html
 from typing import Any
 
 
@@ -66,3 +67,11 @@ def expand_link_entities(message: Any) -> str:
             continue
         expanded = f"{expanded[:end]}{inline}{expanded[end:]}"
     return expanded
+
+
+def bold_label_html(line: str) -> str:
+    """HTML-bold the ``Label:`` prefix of a translated line (whole line when it has no colon)."""
+    label, sep, rest = line.partition(":")
+    if not sep:
+        return f"<b>{_html.escape(line)}</b>"
+    return f"<b>{_html.escape(label)}:</b>{_html.escape(rest)}"
