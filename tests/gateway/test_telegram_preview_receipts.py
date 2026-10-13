@@ -695,3 +695,116 @@ def test_lexical_health_path_resolving_to_another_profile_is_refused(tmp_path, w
     _send_standard(link, event)
     assert wrapper.calls == [] and not (other / rcpt._ROOT_NAME / "transport").exists()
     assert _receipts(other) == []
+
+
+# ── real StreamConsumer fresh-final / empty-fallback finals (new message id + its own time) ──
+
+def _preview_consumer(adapter, *, previews=("8001",)):
+    consumer = GatewayStreamConsumer(adapter, CHAT, StreamConsumerConfig(edit_interval=0.0, buffer_threshold=1, cursor=""))
+    consumer._preview_message_ids = consumer._segment_preview_message_ids = set(previews)
+    consumer._message_id = "8001"
+    adapter.delete_message = AsyncMock(return_value=True)
+    adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)  # Telegram's rich-final lane
+    return consumer
+
+
+def _fresh_final(consumer):
+    """The consumer's real finalize: ``_send_or_edit`` takes ``_try_fresh_final``, then delivery is marked."""
+    return asyncio.run(consumer._finalize_edit(FINAL))
+
+
+def _final_adapter(*results):
+    adapter = _fake_adapter()
+    adapter.send = AsyncMock(side_effect=list(results))
+    return adapter
+
+
+def _new_final(mid="8002", sent=SENT):
+    return SimpleNamespace(success=True, message_id=mid, raw_response={"telegram_message_time": sent} if sent else None)
+
+
+def test_real_fresh_final_registers_the_new_message_id_and_time(home, wrapper):
+    _stage(home)
+    adapter = _final_adapter(_new_final())
+    consumer = _preview_consumer(adapter)
+    assert _fresh_final(consumer) is True
+    assert consumer._platform_message_times == {"8002": SENT} and consumer.message_id == "8002"
+    adapter.delete_message.assert_awaited_once()  # deletion semantics unchanged: only the old preview
+    assert adapter.delete_message.await_args.args[1] == "8001"
+    _deliver_streamed(home, _event(), consumer)
+    (argv,) = wrapper.calls
+    assert argv[argv.index("--preview-message-id") + 1] == "8002"
+    assert argv[argv.index("--preview-sent-at") + 1] == SENT
+
+
+def test_real_empty_fallback_after_flood_retry_registers_the_new_message_id_and_time(home, wrapper):
+    _stage(home)
+    flood = SimpleNamespace(success=False, error="flood_control:0.01", retry_after=0.01, raw_response=None)
+    adapter = _final_adapter(flood, _new_final("8003"))
+    consumer = _preview_consumer(adapter)
+    assert asyncio.run(consumer._send_empty_fallback_final(FINAL)) == "delivered"
+    assert adapter.send.await_count == 2 and consumer._platform_message_times == {"8003": SENT}
+    _deliver_streamed(home, _event(), consumer)
+    (argv,) = wrapper.calls
+    assert argv[argv.index("--preview-message-id") + 1] == "8003"
+    assert argv[argv.index("--preview-sent-at") + 1] == SENT
+
+
+@pytest.mark.parametrize("method", ["_try_fresh_final", "_send_empty_fallback_final"])
+def test_real_final_without_a_platform_time_stays_closed(home, wrapper, method):
+    _stage(home)
+    consumer = _preview_consumer(_final_adapter(_new_final(sent=None)))
+    asyncio.run(consumer._send_empty_fallback_final(FINAL)) if method == "_send_empty_fallback_final" else _fresh_final(consumer)
+    assert consumer._platform_message_times == {}
+    _deliver_streamed(home, _event(), consumer)
+    assert wrapper.calls == [] and "timestamp" in _receipts(home)[0]["reason"]
+
+
+def test_real_fresh_final_after_a_split_is_not_attempted_or_registered(home, wrapper):
+    _stage(home)
+    adapter = _final_adapter(_new_final())
+    consumer = _preview_consumer(adapter)
+    consumer._turn_split_delivery = True
+    assert asyncio.run(consumer._try_fresh_final(FINAL)) is False
+    adapter.send.assert_not_awaited()
+    assert rcpt.streamed_final_snapshot(consumer, FINAL) is None
+
+
+def test_real_empty_fallback_timeout_is_ambiguous_and_registers_nothing(home, wrapper):
+    _stage(home)
+    adapter = _final_adapter(SimpleNamespace(success=False, error="Timed out", raw_response=None))
+    consumer = _preview_consumer(adapter)
+    assert asyncio.run(consumer._send_empty_fallback_final(FINAL)) == "ambiguous"
+    assert consumer._platform_message_times == {}
+    _deliver_streamed(home, _event(), consumer)
+    assert wrapper.calls == []
+
+
+# ── gated-out deliveries never schedule a worker ─────────────────────────────
+
+@pytest.mark.parametrize("source_kw, cfg_kw, profile", [
+    ({"chat_type": "group"}, {}, "health"),
+    ({"platform": Platform.DISCORD}, {}, "health"),
+    ({}, {"enabled": False}, "health"),
+    ({}, {}, "other"),
+])
+def test_gated_out_delivery_returns_before_to_thread(tmp_path, wrapper, monkeypatch, source_kw, cfg_kw, profile):
+    home = _write_config(tmp_path / "profiles" / profile, **cfg_kw)
+    worker = AsyncMock()
+    monkeypatch.setattr(asyncio, "to_thread", worker)
+    source = _source(**source_kw)
+    event = _event(source)
+    asyncio.run(rcpt.register_standard_final(_runner(home), event, SK, FINAL, _ok()))
+    snapshot = {"message_id": "8001", "text": FINAL, "sent_at": SENT, "ambiguous": False}
+    asyncio.run(rcpt.register_streamed_final(_runner(home), event, source, SK, snapshot))
+    worker.assert_not_called()
+    assert wrapper.calls == []
+
+
+def test_enabled_delivery_still_uses_the_worker(home, wrapper, monkeypatch):
+    real = asyncio.to_thread
+    worker = AsyncMock(side_effect=real)
+    monkeypatch.setattr(asyncio, "to_thread", worker)
+    _stage(home)
+    asyncio.run(rcpt.register_standard_final(_runner(home), _event(), SK, FINAL, _ok()))
+    worker.assert_awaited_once()

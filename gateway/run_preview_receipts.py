@@ -508,8 +508,8 @@ async def register_standard_final(runner: Any, event: Any, session_key: str, tex
         return
     import asyncio
     home = _home_for(runner, event.source)
-    if home is None:
-        return
+    if home is None or receipts_config(home, event.source) is None:
+        return  # gated out: no worker thread for ordinary sends
     raw = getattr(result, "raw_response", None)
     raw = raw if isinstance(raw, dict) else {}
     await asyncio.to_thread(
@@ -524,7 +524,7 @@ async def register_streamed_final(runner: Any, event: Any, source: Any, session_
     """Hook for a streamed/edited final the consumer confirmed as one complete message."""
     import asyncio
     home = _home_for(runner, source)
-    if home is None or not snapshot:
+    if home is None or not snapshot or receipts_config(home, source) is None:
         return
     await asyncio.to_thread(
         register_delivered_final, home, event, source, session_key, snapshot["text"],

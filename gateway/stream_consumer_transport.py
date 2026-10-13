@@ -239,11 +239,16 @@ class StreamTransportMixin:
         """Record the primary id plus any continuation ids from an oversized split."""
         raw = getattr(result, "raw_response", None) or {}
         raw_ids = raw.get("message_ids") if isinstance(raw, dict) else None
-        if isinstance(raw, dict) and raw.get("telegram_message_time") and getattr(result, "message_id", None):
-            self._platform_message_times[str(result.message_id)] = raw["telegram_message_time"]
+        self._remember_message_time(result)
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)
+
+    def _remember_message_time(self, result: Any) -> None:
+        """Keep the adapter-reported send/edit time of ``result.message_id`` (receipts need the real one)."""
+        raw = getattr(result, "raw_response", None)
+        if isinstance(raw, dict) and raw.get("telegram_message_time") and getattr(result, "message_id", None):
+            self._platform_message_times[str(result.message_id)] = raw["telegram_message_time"]
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Adapter's prefers_fresh_final_streaming hook (Telegram's richer send path);
@@ -291,6 +296,7 @@ class StreamTransportMixin:
         if not getattr(result, "success", False):
             return False
         new_message_id = getattr(result, "message_id", None)
+        self._remember_message_time(result)
         # Best-effort preview cleanup; never delete the message just sent.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
         self._preview_message_ids = set()
