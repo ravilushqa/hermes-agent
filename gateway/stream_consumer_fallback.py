@@ -262,6 +262,7 @@ class StreamFallbackMixin:
             return "ambiguous" if self._send_failure_may_have_delivered(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
+        self._remember_message_time(result)
         # Telegram reports delete failure by returning False; the flood window that
         # broke the finalize can reject this too — one bounded retry.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Empty fallback",

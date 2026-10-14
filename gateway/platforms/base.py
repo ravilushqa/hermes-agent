@@ -4387,8 +4387,7 @@ class BasePlatformAdapter(ABC):
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
+        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name, len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         if obligation_id is not None:
@@ -4412,9 +4411,10 @@ class BasePlatformAdapter(ABC):
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
-            event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+            event, session_key, text_content, metadata, reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
+        from gateway.run_preview_receipts import register_standard_final
+        await register_standard_final(self.gateway_runner, event, session_key, text_content, result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
